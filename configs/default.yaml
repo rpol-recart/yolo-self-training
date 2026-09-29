@@ -26,7 +26,13 @@ split:
 teacher:
   conf_floor: 0.05                 # prediction threshold; everything above is scored
   nms_iou: 0.6
-  tta: true                        # test-time augmentation for pseudo-labels
+  tta: true                        # test-time augmentation for pseudo-labels (own implementation:
+                                   # ultralytics augment=True is ignored by NMS-free models like YOLO26)
+  tta_flip: true                   # add horizontally flipped views
+  tta_scales: [0.83, 1.17]         # extra input sizes relative to imgsz (rounded to 32)
+  tta_fuse_iou: 0.55               # IoU to merge boxes across views; fused conf = mean over views
+  max_det: 300
+  chunk: 64                        # images held in memory at once
   imgsz: 640
   batch: 16
   device: null                     # null = ultralytics default (GPU if available)
@@ -59,7 +65,7 @@ review:
   max_items: 500                   # size of rounds/<k>/review_queue.csv
 
 student:
-  base_weights: yolov8s.pt         # any ultralytics detection checkpoint
+  base_weights: yolo26s.pt         # YOLO26 n/s/m/l/x; any ultralytics detection checkpoint works
   init: base                       # base: every student starts from base_weights (recommended)
                                    # teacher: continue from the teacher (faster, drifts more)
   train_args:                      # passed to ultralytics YOLO.train as is
@@ -67,6 +73,9 @@ student:
     imgsz: 640
     batch: 16
     patience: 30
+    optimizer: MuSGD               # PIN it: "auto" switches AdamW <-> MuSGD by iteration count,
+    lr0: 0.01                      # so rounds of different size would use different optimizers
+    momentum: 0.9
 
 eval:
   imgsz: 640

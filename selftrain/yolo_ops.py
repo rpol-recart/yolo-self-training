@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .boxes import nms_per_class
+from .boxes import fuse_tta, nms_per_class, unflip_x
 from .dataset import write_data_yaml, write_list
 
 
@@ -18,26 +18,67 @@ def _yolo(weights: str):
     return YOLO(weights)
 
 
+def _views(tcfg: dict) -> list[tuple[int, bool]]:
+    """TTA views as (imgsz, hflip). The first view is always the plain one."""
+    base = tcfg["imgsz"]
+    if not tcfg["tta"]:
+        return [(base, False)]
+    sizes = [max(32, int(round(base * s / 32)) * 32) for s in tcfg.get("tta_scales", [1.0])]
+    views = []
+    for sz in dict.fromkeys([base, *sizes]):
+        views.append((sz, False))
+        if tcfg.get("tta_flip", True):
+            views.append((sz, True))
+    return views
+
+
+def _predict_arrays(model, arrays: list, imgsz: int, tcfg: dict) -> list[np.ndarray]:
+    out = []
+    for r in model.predict(arrays, conf=tcfg["conf_floor"], iou=tcfg["nms_iou"], imgsz=imgsz,
+                           augment=False, batch=tcfg["batch"], device=tcfg["device"],
+                           max_det=tcfg.get("max_det", 300), stream=True, verbose=False):
+        b = r.boxes
+        out.append(np.concatenate([b.xyxyn.cpu().numpy(), b.conf.cpu().numpy()[:, None],
+                                   b.cls.cpu().numpy()[:, None]], axis=1) if len(b) else np.zeros((0, 6)))
+    return out
+
+
 def predict(weights: str, images: list[str], tcfg: dict, out_jsonl: str | Path) -> dict[str, np.ndarray]:
-    """Teacher predictions -> {path: (N,6) normalized x1,y1,x2,y2,conf,cls}. Cached in out_jsonl."""
+    """Teacher predictions -> {path: (N,6) normalized x1,y1,x2,y2,conf,cls}. Cached in out_jsonl.
+
+    TTA is done here (flip + scales, fused with fuse_tta) instead of ultralytics' augment=True,
+    which end-to-end (NMS-free) models such as YOLO26 silently ignore.
+    """
+    import cv2
+
     out_jsonl = Path(out_jsonl)
     if out_jsonl.exists():
         return load_predictions(out_jsonl)
     model = _yolo(weights)
+    views = _views(tcfg)
     res = {}
     out_jsonl.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_jsonl.with_suffix(".partial")
+    chunk = max(1, int(tcfg.get("chunk", 64)))
     with open(tmp, "w") as f:
-        for i in range(0, len(images), 256):
-            chunk = images[i:i + 256]
-            for r in model.predict(chunk, conf=tcfg["conf_floor"], iou=tcfg["nms_iou"], imgsz=tcfg["imgsz"],
-                                   augment=tcfg["tta"], batch=tcfg["batch"], device=tcfg["device"],
-                                   stream=True, verbose=False):
-                b = r.boxes
-                d = np.concatenate([b.xyxyn.cpu().numpy(), b.conf.cpu().numpy()[:, None],
-                                    b.cls.cpu().numpy()[:, None]], axis=1) if len(b) else np.zeros((0, 6))
-                d = nms_per_class(d, tcfg["nms_iou"])
-                key = str(Path(r.path).resolve())  # same key form as the split lists
+        for i in range(0, len(images), chunk):
+            paths = images[i:i + chunk]
+            arrays = [cv2.imread(p) for p in paths]
+            bad = [p for p, a in zip(paths, arrays) if a is None]
+            if bad:
+                raise IOError(f"cannot read images: {bad[:3]}")
+            per_view = []
+            for sz, flip in views:
+                src = [np.ascontiguousarray(a[:, ::-1]) for a in arrays] if flip else arrays
+                dets = _predict_arrays(model, src, sz, tcfg)
+                per_view.append([unflip_x(d) if flip else d for d in dets])
+            for j, p in enumerate(paths):
+                if len(views) == 1:
+                    d = nms_per_class(per_view[0][j], tcfg["nms_iou"])
+                else:
+                    d = fuse_tta([v[j] for v in per_view], tcfg.get("tta_fuse_iou", 0.55))
+                    d = d[d[:, 4] >= tcfg["conf_floor"]]
+                key = str(Path(p).resolve())  # same key form as the split lists
                 res[key] = d
                 f.write(json.dumps({"path": key, "dets": np.round(d, 5).tolist()}) + "\n")
     tmp.rename(out_jsonl)

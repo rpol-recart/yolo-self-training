@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from selftrain.boxes import iou_matrix, nms_per_class, xyxy_to_yolo, yolo_to_xyxy
+from selftrain.boxes import fuse_tta, iou_matrix, nms_per_class, unflip_x, xyxy_to_yolo, yolo_to_xyxy
 from selftrain.calibrate import calibrate, match_predictions, threshold_for_precision
 from selftrain.config import DEFAULTS, deep_merge, validate
 from selftrain.decide import accept_round, should_stop
@@ -192,3 +192,28 @@ def test_t_low_extends_to_floor_when_all_val_predictions_are_correct():
     gts = {"a": np.array([[0, 0, 0, 0.5, 0.5]])}
     th = calibrate(preds, gts, 1, CAL, conf_floor=0.05)
     assert th[0]["t_high"] == 0.95 and th[0]["t_low"] == 0.05
+
+
+# ---------- TTA ----------
+
+def test_unflip_x_roundtrip():
+    d = np.array([[0.1, 0.2, 0.3, 0.4, 0.9, 1]])
+    np.testing.assert_allclose(unflip_x(d), [[0.7, 0.2, 0.9, 0.4, 0.9, 1]])
+    np.testing.assert_allclose(unflip_x(unflip_x(d)), d)
+
+
+def test_fuse_tta_agreement_keeps_confidence_single_view_is_diluted():
+    obj = np.array([[0.1, 0.1, 0.3, 0.3, 0.8, 0]])
+    ghost = np.array([[0.6, 0.6, 0.7, 0.7, 0.8, 0]])
+    views = [np.r_[obj, ghost], obj + [0.005, 0, 0.005, 0, 0, 0], obj]
+    fused = fuse_tta(views, 0.55)
+    assert len(fused) == 2
+    assert fused[0, 4] == pytest.approx(0.8)          # seen in all 3 views
+    assert fused[1, 4] == pytest.approx(0.8 / 3)      # seen in 1 of 3 views
+    np.testing.assert_allclose(fused[0, :4], [0.101667, 0.1, 0.301667, 0.3], atol=1e-4)
+
+
+def test_fuse_tta_does_not_merge_classes():
+    a = np.array([[0.1, 0.1, 0.3, 0.3, 0.8, 0]])
+    b = np.array([[0.1, 0.1, 0.3, 0.3, 0.8, 1]])
+    assert len(fuse_tta([a, b])) == 2

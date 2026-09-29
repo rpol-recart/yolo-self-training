@@ -28,7 +28,12 @@ DEFAULTS: dict = {
     "teacher": {
         "conf_floor": 0.05,
         "nms_iou": 0.6,
-        "tta": True,
+        "tta": True,               # own TTA (flip + scales), works for NMS-free YOLO26 too
+        "tta_flip": True,
+        "tta_scales": [0.83, 1.17],
+        "tta_fuse_iou": 0.55,
+        "max_det": 300,
+        "chunk": 64,               # images read into memory at once
         "imgsz": 640,
         "batch": 16,
         "device": None,
@@ -61,9 +66,12 @@ DEFAULTS: dict = {
         "max_items": 500,
     },
     "student": {
-        "base_weights": "yolov8s.pt",
+        "base_weights": "yolo26s.pt",
         "init": "base",  # base | teacher
-        "train_args": {"epochs": 100, "imgsz": 640, "batch": 16, "patience": 30},
+        # optimizer is pinned: with "auto" ultralytics picks AdamW or MuSGD by iteration count,
+        # so round 0 (GT only) and pseudo-label rounds could silently train with different optimizers
+        "train_args": {"epochs": 100, "imgsz": 640, "batch": 16, "patience": 30,
+                       "optimizer": "MuSGD", "lr0": 0.01, "momentum": 0.9},
     },
     "eval": {
         "min_group_images": 10,
@@ -109,6 +117,10 @@ def validate(cfg: dict) -> None:
         raise ValueError("config: filter.uncertain_policy must be drop_image or keep_confident")
     if cfg["student"]["init"] not in ("base", "teacher"):
         raise ValueError("config: student.init must be base or teacher")
+    if cfg["student"]["train_args"].get("optimizer", "auto") == "auto":
+        import warnings
+        warnings.warn("student.train_args.optimizer=auto: the optimizer may differ between rounds; "
+                      "pin it (e.g. MuSGD or AdamW) so rounds are comparable")
     s = cfg["split"]
     if s["val_fraction"] <= 0 or s["val_fraction"] + s["test_fraction"] >= 1:
         raise ValueError("config: need 0 < val_fraction and val_fraction + test_fraction < 1")

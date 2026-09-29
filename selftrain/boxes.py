@@ -61,3 +61,47 @@ def xyxy_to_yolo(boxes: np.ndarray, cls: np.ndarray) -> np.ndarray:
     w = b[:, 2] - b[:, 0]
     h = b[:, 3] - b[:, 1]
     return np.stack([np.asarray(cls, dtype=float).reshape(-1), cx, cy, w, h], axis=1)
+
+
+def unflip_x(dets: np.ndarray) -> np.ndarray:
+    """Map boxes predicted on a horizontally flipped image back to the original (normalized coords)."""
+    d = np.asarray(dets, dtype=float).reshape(-1, 6).copy()
+    x1 = d[:, 0].copy()
+    d[:, 0] = 1.0 - d[:, 2]
+    d[:, 2] = 1.0 - x1
+    return d
+
+
+def fuse_tta(views: list[np.ndarray], iou_thr: float = 0.55) -> np.ndarray:
+    """Fuse detections from several TTA views into one set (weighted box fusion, simplified).
+
+    Boxes of the same class with IoU >= iou_thr across views form a cluster. The fused box is
+    the confidence-weighted mean; the fused confidence is the SUM of the best confidence per view
+    divided by the number of views, so an object seen in only one view gets its confidence
+    diluted. For pseudo-labeling this is the point: agreement between views = reliability.
+    """
+    n_views = len(views)
+    if n_views == 0:
+        return np.zeros((0, 6))
+    tagged = [np.c_[np.asarray(v, dtype=float).reshape(-1, 6), np.full(len(v), i)] for i, v in enumerate(views)]
+    allb = np.concatenate(tagged) if tagged else np.zeros((0, 7))
+    out = []
+    for c in np.unique(allb[:, 5]):
+        d = allb[allb[:, 5] == c]
+        d = d[np.argsort(-d[:, 4])]
+        used = np.zeros(len(d), dtype=bool)
+        for i in range(len(d)):
+            if used[i]:
+                continue
+            ious = iou_matrix(d[i:i + 1, :4], d[:, :4])[0]
+            members = np.where(~used & (ious >= iou_thr))[0]
+            used[members] = True
+            m = d[members]
+            w = m[:, 4:5]
+            box = (m[:, :4] * w).sum(0) / w.sum()
+            best_per_view = [m[m[:, 6] == v, 4].max() for v in np.unique(m[:, 6])]
+            out.append([*box, sum(best_per_view) / n_views, c])
+    if not out:
+        return np.zeros((0, 6))
+    out = np.asarray(out)
+    return out[np.argsort(-out[:, 4])]

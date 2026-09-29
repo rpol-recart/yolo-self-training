@@ -17,7 +17,8 @@ split:
 
 teacher:
   imgsz: 320
-  tta: false
+  tta: true            # flip only (2 views) to keep the smoke run short
+  tta_scales: []
   device: cpu
   batch: 8
 
@@ -30,8 +31,9 @@ filter:
     regex: '(?P<seq>seq_\d+)/frame_(?P<idx>\d+)\.[^.]+$'
 
 student:
-  base_weights: yolov8n.pt
-  train_args: {epochs: 30, imgsz: 320, batch: 8, device: cpu, workers: 0, plots: false}
+  base_weights: yolo26n.pt
+  train_args: {epochs: 30, imgsz: 320, batch: 8, device: cpu, workers: 0, plots: false,
+               optimizer: MuSGD, lr0: 0.01, momentum: 0.9}
 
 eval:
   imgsz: 320
