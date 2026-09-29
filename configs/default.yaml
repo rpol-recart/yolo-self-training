@@ -1,0 +1,83 @@
+# Template config. Copy it, fill in `names` and `data`, check `groups.regex`
+# (python -m selftrain.split --config <cfg> --dry-run). Every key is optional except
+# names and data.gt_images; missing keys take the defaults from selftrain/config.py.
+# See docs/APPROACH.md for the reasoning behind each parameter.
+
+names: [class_a, class_b]         # class index in YOLO label files = position in this list
+workdir: runs/selftrain            # splits, rounds, history.json, final.json
+seed: 0
+
+data:
+  gt_images: data/labeled/images      # labels are read from the sibling tree .../labels/... (.txt per image)
+  unlabeled_images: data/unlabeled/images
+  extensions: [.jpg, .jpeg, .png, .bmp, .webp]
+
+groups:
+  # Group = unit of correlated data (video, camera, session, site). Split is done by group.
+  # Applied to the path relative to the images dir; must define (?P<group>...).
+  regex: '^(?P<group>[^/]+)/'
+  csv: null                        # alternative: CSV with columns path,group (absolute paths)
+
+split:
+  val_fraction: 0.15               # fraction of GROUPS, not images
+  test_fraction: 0.15
+  exclude_eval_groups_from_pool: true   # unlabeled images of val/test groups are never pseudo-labeled
+
+teacher:
+  conf_floor: 0.05                 # prediction threshold; everything above is scored
+  nms_iou: 0.6
+  tta: true                        # test-time augmentation for pseudo-labels
+  imgsz: 640
+  batch: 16
+  device: null                     # null = ultralytics default (GPU if available)
+
+calibration:
+  iou: 0.5                         # IoU to count a prediction as correct
+  target_precision: 0.90           # -> t_high: boxes above go into pseudo-labels
+  low_precision: 0.50              # -> t_low: between t_low and t_high = grey zone
+  min_support: 20                  # fewer GT boxes of a class in val -> fallback thresholds
+  fallback_high: 0.6
+  fallback_low: 0.25
+
+filter:
+  uncertain_policy: drop_image     # drop_image: images with grey-zone boxes are not trained on
+                                   # keep_confident: keep them with confident boxes only
+  min_box_area: 0.0005             # fraction of the image area
+  temporal:
+    enabled: false                 # for video frames: require support in neighbour frames
+    regex: '(?P<seq>.+)[/_-](?P<idx>\d+)\.[^.]+$'   # sequence id + frame index from the path
+    window: 2                      # neighbours on each side
+    iou: 0.3
+    min_support: 1
+
+merge:
+  max_pseudo_ratio: 3.0            # pseudo-labeled images <= ratio * GT-train images
+  background_ratio: 0.1            # empty (negative) images, relative to GT-train
+  max_per_group: null              # cap on images taken from one group
+
+review:
+  max_items: 500                   # size of rounds/<k>/review_queue.csv
+
+student:
+  base_weights: yolov8s.pt         # any ultralytics detection checkpoint
+  init: base                       # base: every student starts from base_weights (recommended)
+                                   # teacher: continue from the teacher (faster, drifts more)
+  train_args:                      # passed to ultralytics YOLO.train as is
+    epochs: 100
+    imgsz: 640
+    batch: 16
+    patience: 30
+
+eval:
+  imgsz: 640
+  batch: 16
+  min_group_images: 10             # smaller val groups are not evaluated separately
+
+accept:
+  metric: map50_95                 # or map50
+  min_delta: 0.003                 # required improvement over the best model
+  group_tolerance: 0.02            # max allowed drop on any val group
+
+loop:
+  max_rounds: 4                    # self-training rounds after round 0
+  patience: 2                      # stop after this many rejected rounds in a row

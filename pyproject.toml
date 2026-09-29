@@ -1,0 +1,17 @@
+[project]
+name = "selftrain"
+version = "0.1.0"
+description = "YOLO self-training on pseudo-labels: teacher -> calibrated pseudo-labels -> student rounds"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "pyyaml>=6.0", "pillow>=10.0"]
+
+[project.optional-dependencies]
+yolo = ["ultralytics==8.4.165"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+packages = ["selftrain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

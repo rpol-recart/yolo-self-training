@@ -1,0 +1,43 @@
+# Smoke test on synthetic data (scripts/make_synthetic.py): proves the loop runs end to end.
+# Metrics here mean nothing; a real run uses configs/default.yaml as the template.
+names: [class_a, class_b]
+workdir: runs/smoke
+seed: 0
+
+data:
+  gt_images: data/synthetic/labeled/images
+  unlabeled_images: data/synthetic/unlabeled/images
+
+groups:
+  regex: '^(?P<group>seq_\d+)/'
+
+split:
+  val_fraction: 0.2
+  test_fraction: 0.2
+
+teacher:
+  imgsz: 320
+  tta: false
+  device: cpu
+  batch: 8
+
+calibration:
+  min_support: 5
+
+filter:
+  temporal:
+    enabled: true
+    regex: '(?P<seq>seq_\d+)/frame_(?P<idx>\d+)\.[^.]+$'
+
+student:
+  base_weights: yolov8n.pt
+  train_args: {epochs: 30, imgsz: 320, batch: 8, device: cpu, workers: 0, plots: false}
+
+eval:
+  imgsz: 320
+  batch: 8
+  min_group_images: 5
+
+loop:
+  max_rounds: 2
+  patience: 2
