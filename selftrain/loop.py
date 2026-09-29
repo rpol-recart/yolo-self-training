@@ -58,7 +58,7 @@ def run_round0(cfg: dict, split: dict, rdir: Path) -> dict:
     return {"round": 0, "weights": weights, "metrics": metrics, "accepted": True, "reasons": ["baseline on GT only"]}
 
 
-def run_round(k: int, cfg: dict, split: dict, teacher: str, rdir: Path) -> dict:
+def run_round(k: int, cfg: dict, split: dict, teacher: str, rdir: Path, prev_rejected: Path | None) -> dict:
     names = cfg["names"]
     select_seed = cfg["seed"] + k  # varies the pseudo-label sample between rounds
     rdir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +86,11 @@ def run_round(k: int, cfg: dict, split: dict, teacher: str, rdir: Path) -> dict:
     val_txt = write_list(rdir / "val.txt", split["val"])
     stats = build_round_dataset(rdir, split["train"], val_txt, decisions, names, cfg["merge"], select_seed)
     _dump(rdir / "pseudo_stats.json", stats)
+    if prev_rejected is not None and (prev_rejected / "sources.txt").exists() and \
+            (prev_rejected / "sources.txt").read_text() == (rdir / "sources.txt").read_text():
+        # same teacher + same selected data + same training seed = the rejected round again
+        return {"round": k, "weights": None, "metrics": None, "teacher": teacher, "pseudo": stats,
+                "duplicate": True}
 
     # 5. student
     s = cfg["student"]
@@ -122,13 +127,21 @@ def main() -> None:
         elif k == 0:
             result = run_round0(cfg, split, rdir)
         else:
-            result = run_round(k, cfg, split, best["weights"], rdir)
-            result["accepted"], result["reasons"] = accept_round(result["metrics"], best["metrics"], cfg["accept"])
+            prev = rounds[-1] if rounds and not rounds[-1]["accepted"] else None
+            prev_dir = work / "rounds" / str(prev["round"]) if prev else None
+            result = run_round(k, cfg, split, best["weights"], rdir, prev_dir)
+            if result.get("duplicate"):
+                result["accepted"] = False
+                result["reasons"] = [f"training set identical to rejected round {prev['round']}: "
+                                     "nothing new to try with this teacher"]
+            else:
+                result["accepted"], result["reasons"] = accept_round(result["metrics"], best["metrics"],
+                                                                     cfg["accept"])
         if not done.exists():
             _dump(done, result)
         m = cfg["accept"]["metric"]
-        print(f"round {k}: {m}={result['metrics']['overall'][m]:.4f} accepted={result['accepted']} "
-              f"({'; '.join(result['reasons'])})")
+        score = f"{result['metrics']['overall'][m]:.4f}" if result["metrics"] else "n/a"
+        print(f"round {k}: {m}={score} accepted={result['accepted']} ({'; '.join(result['reasons'])})")
         if result["accepted"]:
             best = result
         rounds.append(result)
@@ -137,9 +150,11 @@ def main() -> None:
             "best_round": best["round"],
             "best_weights": best["weights"],
             "rounds": [{"round": r["round"], "accepted": r["accepted"], "reasons": r["reasons"],
-                        "overall": r["metrics"]["overall"]} for r in rounds],
+                        "overall": r["metrics"]["overall"] if r["metrics"] else None} for r in rounds],
         })
         stop, why = should_stop(history, cfg["loop"])
+        if result.get("duplicate"):
+            stop, why = True, result["reasons"][0]
         if stop:
             print(f"stop: {why}")
             break

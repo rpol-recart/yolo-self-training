@@ -86,6 +86,9 @@ def build_round_dataset(round_dir: str | Path, gt_train: list[str], val_list: st
         train.append(str(dst))
 
     train_txt = write_list(round_dir / "train.txt", train)
+    # what went in, by source path: lets the loop detect a round identical to the previous one
+    write_list(round_dir / "sources.txt", sorted([f"pseudo {d.path}" for d in pseudo] +
+                                                 [f"background {d.path}" for d in background]))
     data_yaml = write_data_yaml(round_dir / "data.yaml", train_txt, val_list, names)
     pseudo_counts = class_counts([d.confident[:, [5, 0, 1, 2, 3]] for d in pseudo], len(names))
     return {
